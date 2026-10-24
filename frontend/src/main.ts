@@ -14,6 +14,8 @@ const state = {
   busy: false,
 };
 
+const acc: string[] = []; // накопленный стрим (для обновления текста рядом со спиннером)
+
 let ws: WebSocket | null = null;
 let wsReady = false;
 
@@ -190,8 +192,7 @@ function handleEvent(ev: ServerEvent): void {
       if (!spinnerEl) startSpinner();
       updateStreamText(acc.join(''));
       scrollOutToEnd();
-      break;
-    case 'done':
+      break;    case 'done':
       state.result = ev.translation;
       state.busy = false;
       stopSpinner();
@@ -211,6 +212,7 @@ function translate(): void {
   state.seq += 1;
   state.busy = true;
   state.result = '';
+  acc.length = 0;
   startSpinner();
   send({ type: 'translate', text: state.text, src: state.src, tgt: state.tgt, seq: state.seq });
 }
