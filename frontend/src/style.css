@@ -7,7 +7,8 @@ body {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  padding: 8px 10px;
+  /* 38px сверху: не наезжаем на кнопку закрытия (fullSizeContentView) */
+  padding: 38px 10px 8px;
   background: #1c1e24;
   color: #e8e8ec;
   font-family: -apple-system, system-ui, sans-serif;
