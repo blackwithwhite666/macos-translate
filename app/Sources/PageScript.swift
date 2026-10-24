@@ -9,7 +9,7 @@ enum PageScript {
       if (window.__mtInstalled) return; window.__mtInstalled = true;
 
       var css = [
-        '#mtCard{position:fixed;left:8px;right:8px;bottom:8px;min-height:96px;max-height:136px;',
+        '#mtCard{position:fixed;left:8px;right:8px;bottom:8px;min-height:120px;max-height:180px;',
         'background:rgba(28,30,38,.98);border:1px solid rgba(255,255,255,.16);border-radius:11px;',
         'padding:8px 11px;color:#e8e8ec;z-index:2147483000;opacity:0;pointer-events:none;',
         'transform:translateY(6px);transition:opacity .12s,transform .12s;',
@@ -19,9 +19,9 @@ enum PageScript {
         '#mtWord{font-weight:700;font-size:13.5px}',
         '#mtCopy{cursor:pointer;opacity:.5;font-size:14px;padding:0 3px}',
         '#mtCopy:hover{opacity:1}',
-        '#mtBody{line-height:1.45;max-height:88px;overflow-y:auto;color:#c9c9d1}',
+        '#mtBody{line-height:1.45;max-height:132px;overflow-y:auto;color:#c9c9d1}',
         '::highlight(mt-word){background-color:rgba(122,162,255,.45);border-radius:2px}',
-        '.block-container{padding:.55rem .85rem .6rem !important;max-width:none !important}',
+        '.block-container{padding:2.05rem .85rem .6rem !important;max-width:none !important}',
         '[data-testid="stVerticalBlock"]{gap:.5rem !important}',
         '[data-testid="stHeader"],#stDecoration,[data-testid="stStatusWidget"]{display:none !important}',
         '.stButton>button{height:2.05rem;font-size:.85rem;margin:0 !important}',

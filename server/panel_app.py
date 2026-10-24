@@ -2,9 +2,10 @@
 
 Страница грузится один раз; новые выделения панель подхватывает сама,
 опрашивая GET /pending (st.fragment, раз в секунду) — без перезагрузки.
-Исходный текст и перевод показываются как div-блоки .mt-source /
-.mt-translation: наведение на слово в любом из них открывает снизу
-карточку из системного словаря (JS-слой Swift-обёртки). «✏️» — редактировать.
+
+Раскладка (сверху вниз): исходный текст → селекты «источник → приёмник» →
+перевод → карточка словаря (оверлей, по наведению на слово в .mt-source
+или .mt-translation). Исходный язык «Авто» подхватывает результат детекта.
 """
 
 from __future__ import annotations
@@ -19,7 +20,7 @@ from typing import Any
 import httpx
 import streamlit as st
 
-from languages import ALL_LANGUAGES
+from languages import ALL_LANGUAGES, BIDIRECTIONAL
 
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger("panel")
@@ -38,6 +39,8 @@ COMMON_TARGETS = [
     "Japanese",
     "Portuguese",
 ]
+SOURCE_OPTIONS = ["Авто"] + sorted(BIDIRECTIONAL)
+TARGETS = COMMON_TARGETS + sorted(set(ALL_LANGUAGES) - set(COMMON_TARGETS))
 STATUS_LABELS = {
     "detecting": "Определяю язык…",
     "loading-model": "Подгружаю модель (первый запуск ~10 с)…",
@@ -58,14 +61,28 @@ ZONE_CSS = """
     overflow-wrap: anywhere;
 }
 .mt-source {
-    max-height: 128px;
+    max-height: 122px;
     overflow-y: auto;
     color: #c9c9d1;
 }
 .mt-translation {
-    min-height: 96px;
     color: #ececf2;
     font-size: 14px;
+}
+.mt-arrow {
+    text-align: center;
+    color: #9aa0ad;
+    font-size: 15px;
+    padding-top: 4px;
+}
+[data-testid="stHorizontalBlock"] {
+    flex-wrap: nowrap !important;
+}
+[data-testid="stHorizontalBlock"] > [data-testid="stColumn"] {
+    min-width: 0 !important;
+}
+[data-testid="stHorizontalBlock"] div[data-baseweb="select"] {
+    min-width: 0 !important;
 }
 </style>
 """
@@ -78,15 +95,12 @@ q_target = params.get("target") or DEFAULT_TARGET
 if q_target not in ALL_LANGUAGES:
     q_target = DEFAULT_TARGET
 
-targets = COMMON_TARGETS + sorted(set(ALL_LANGUAGES) - set(COMMON_TARGETS))
-
 ss = st.session_state
 ss.setdefault("text", q_text)
 ss.setdefault("result", "")
 ss.setdefault("detected", None)
-ss.setdefault("auto_key", None)
 ss.setdefault("pending_seen", None)
-ss.setdefault("editing", False)
+ss.setdefault("source_user_set", False)
 
 
 def _pending_state() -> dict[str, Any]:
@@ -98,28 +112,33 @@ def _pending_state() -> dict[str, Any]:
         return {"text": None, "mtime_ns": 0, "size": 0}
 
 
-# Первая загрузка с ?text=… (Swift открывает панель впервые)
-if q_text and ss["auto_key"] != f"{q_nonce}|{q_text[:200]}":
-    ss["text"] = q_text
+def _new_text_arrived(text: str) -> bool:
+    """Меняет состояние под новый текст. Только НЕ-виджетные ключи:
+    вызывается и сверху (до виджетов), и из фрагмента (после)."""
+    if not text.strip() or text == ss.get("text"):
+        return False
+    ss["text"] = text
     ss["result"] = ""
     ss["detected"] = None
-    ss["auto_key"] = f"{q_nonce}|{q_text[:200]}"
     ss["run_now"] = True
-    ss["editing"] = False
+    ss["incoming_source_reset"] = True
+    return True
+
+
+# Всё, что трогает ключи виджетов, — только здесь, до создания виджетов.
+if _new_text_arrived(q_text):
     p = _pending_state()
     ss["pending_seen"] = (p["mtime_ns"], p["size"])
 st.query_params.clear()  # чтобы reconnect/reload не переиграл старый текст
 
+if ss.pop("incoming_source_reset", False):
+    ss["source_lang_name"] = "Авто"
+    ss["source_user_set"] = False
 
-# Новый выделение из фрагмента — забираем ДО создания виджетов (иначе
-# Streamlit не даёт менять session_state по ключу виджета)
-_incoming = ss.pop("incoming", None)
-if _incoming is not None and _incoming.strip() and _incoming != ss.get("text"):
-    ss["text"] = _incoming
-    ss["result"] = ""
-    ss["detected"] = None
-    ss["run_now"] = True
-    ss["editing"] = False
+# Определённый языком источник подставляем в селект, пока юзер не выбрал сам
+detected_src = ss.pop("src_detected_name", None)
+if detected_src and not ss.get("source_user_set"):
+    ss["source_lang_name"] = detected_src
 
 
 @st.fragment(run_every="1s")
@@ -130,8 +149,8 @@ def _poll_pending() -> None:
     text = (p.get("text") or "").strip()
     if text and key != ss.get("pending_seen"):
         ss["pending_seen"] = key
-        ss["incoming"] = text
-        st.rerun()
+        if _new_text_arrived(text):
+            st.rerun()
 
 
 def sse_events(payload: dict[str, Any]) -> Iterator[tuple[str, dict[str, Any]]]:
@@ -156,46 +175,9 @@ def sse_events(payload: dict[str, Any]) -> Iterator[tuple[str, dict[str, Any]]]:
                 event = ""
 
 
-# --- Верхняя строка: детект + целевой язык + правка --------------------------
+# --- Исходный текст (сразу под кнопкой закрыть, со скроллом) ------------------
 
-c_badge, c_target, c_edit = st.columns([7, 6, 1], vertical_alignment="center")
-with c_badge:
-    if ss["detected"]:
-        name = ss["detected"].get("language") or ss["detected"].get("lingua_name") or "?"
-        conf = ss["detected"].get("confidence")
-        suffix = f" ({conf:.0%})" if conf is not None else ""
-        st.markdown(f"🧭 **{name}**{suffix} → **{ss['target_lang_name']}**")
-with c_target:
-    st.selectbox(
-        "Перевести на",
-        targets,
-        index=targets.index(q_target) if q_target in targets else 0,
-        key="target_lang_name",
-        label_visibility="collapsed",
-    )
-with c_edit:
-    if ss["editing"]:
-        st.button(
-            "✅",
-            key="done_edit",
-            help="Вернуться к просмотру",
-            on_click=lambda: ss.update(editing=False),
-        )
-    else:
-        st.button(
-            "✏️", key="start_edit", help="Изменить текст", on_click=lambda: ss.update(editing=True)
-        )
-
-# --- Исходный текст ----------------------------------------------------------
-
-if ss["editing"]:
-    st.text_area(
-        "Исходный текст",
-        key="text",
-        height=88,
-        label_visibility="collapsed",
-    )
-elif (ss["text"] or "").strip():
+if (ss["text"] or "").strip():
     st.markdown(
         f'<div class="mt-source">{html.escape(ss["text"])}</div>',
         unsafe_allow_html=True,
@@ -207,15 +189,42 @@ else:
         unsafe_allow_html=True,
     )
 
-run = st.button("Перевести", "primary", use_container_width=True)
+# --- Селекты: источник → приёмник ----------------------------------------------
 
-# --- Перевод ------------------------------------------------------------------
+c_src, c_arrow, c_tgt = st.columns([20, 2, 20], vertical_alignment="center", gap="small")
+with c_src:
+    st.selectbox(
+        "С",
+        SOURCE_OPTIONS,
+        key="source_lang_name",
+        label_visibility="collapsed",
+        on_change=lambda: (
+            ss.update(source_user_set=True, run_now=True) if ss.get("result") else None
+        ),
+    )
+with c_arrow:
+    st.markdown('<div class="mt-arrow">→</div>', unsafe_allow_html=True)
+with c_tgt:
+    st.selectbox(
+        "На",
+        TARGETS,
+        index=TARGETS.index(q_target) if q_target in TARGETS else 0,
+        key="target_lang_name",
+        label_visibility="collapsed",
+        on_change=lambda: ss.update(run_now=True) if ss.get("text") else None,
+    )
 
-if ss.pop("run_now", False) or run:
-    if not (ss["text"] or "").strip():
-        st.warning("Введите текст для перевода", icon="⚠️")
-    else:
-        payload = {"text": ss["text"], "src": "auto", "tgt": ss["target_lang_name"]}
+# --- Перевод (запускается сам: новый текст или смена языка) ---------------------
+
+if ss.pop("run_now", False) and (ss["text"] or "").strip():
+    src = ss["source_lang_name"]
+    payload = {
+        "text": ss["text"],
+        "src": "auto" if src == "Авто" else src,
+        "tgt": ss["target_lang_name"],
+    }
+    # Фиксированная высота: стриминг не наезжает на исходник и скроллится
+    with st.container(height=216, border=False):
         box = st.empty()
         acc: list[str] = []
         for event, data in sse_events(payload):
@@ -223,6 +232,8 @@ if ss.pop("run_now", False) or run:
                 box.markdown(f"⏳ _{STATUS_LABELS.get(data.get('phase'), data.get('phase', '…'))}_")
             elif event == "detect":
                 ss["detected"] = data
+                if data.get("used_as_source"):
+                    ss["src_detected_name"] = data["used_as_source"]
             elif event == "token":
                 acc.append(data.get("text", ""))
                 box.text("".join(acc))
@@ -234,9 +245,10 @@ if ss.pop("run_now", False) or run:
                 st.error(data.get("message", "Ошибка перевода"), icon="⚠️")
 
 if ss["result"]:
-    st.markdown(
-        f'<div class="mt-translation">{html.escape(ss["result"])}</div>',
-        unsafe_allow_html=True,
-    )
+    with st.container(height=216, border=False):
+        st.markdown(
+            f'<div class="mt-translation">{html.escape(ss["result"])}</div>',
+            unsafe_allow_html=True,
+        )
 
 _poll_pending()
