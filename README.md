@@ -5,7 +5,9 @@ appears next to the cursor where the translation is typed out token by token.
 Hover a word to see its entry from the macOS system dictionary. Everything runs
 offline — nothing leaves your machine.
 
-<img src="assets/screenshot-dict.png" width="230" alt="Translation panel with a dictionary card">
+<p align="center">
+  <img src="assets/screenshot-dict.png" width="345" alt="Translation panel with a dictionary card">
+</p>
 
 - **Model:** Google TranslateGemma 4B, 8-bit MLX quant (~4 GB)
 - **Languages:** 295 (225 bidirectional + 70 English-only targets)
