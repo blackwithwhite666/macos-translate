@@ -5,16 +5,13 @@ appears next to the cursor where the translation is typed out token by token.
 Hover a word to see its entry from the macOS system dictionary. Everything runs
 offline — nothing leaves your machine.
 
-![Panel with dictionary card](assets/screenshot-dict.png)
-![Panel with translation](assets/screenshot.png)
+<img src="assets/screenshot-dict.png" width="230" alt="Translation panel with a dictionary card">
 
-| | |
-|---|---|
-| Model | Google TranslateGemma 4B, 8-bit MLX quant (~4 GB) |
-| Languages | 295 (225 bidirectional + 70 English-only targets) |
-| Language detection | lingua-language-detector (automatic) |
-| Dictionary | macOS system dictionaries (the ones in Dictionary.app) |
-| Memory | the model lives in a subprocess and is **unloaded after 10 minutes of inactivity** |
+- **Model:** Google TranslateGemma 4B, 8-bit MLX quant (~4 GB)
+- **Languages:** 295 (225 bidirectional + 70 English-only targets)
+- **Language detection:** lingua-language-detector (automatic)
+- **Dictionary:** macOS system dictionaries (the ones in Dictionary.app)
+- **Memory:** the model lives in a subprocess and is **unloaded after 10 minutes of inactivity**
 
 ## How it works
 
