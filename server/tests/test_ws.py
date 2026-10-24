@@ -20,7 +20,11 @@ import gateway
 
 
 @pytest.fixture()
-def client():
+def client(tmp_path, monkeypatch):
+    # изолируем pending-файл, чтобы снапшот при подключении не мешал тестам
+    empty = tmp_path / "empty-pending.txt"
+    empty.write_text("", encoding="utf-8")
+    monkeypatch.setenv("MT_PENDING", str(empty))
     with TestClient(gateway.app) as c:
         yield c
 
@@ -58,3 +62,12 @@ def test_ws_bad_language(client):
         ev = ws.receive_json()
     assert ev["type"] == "error"
     assert ev["seq"] == 2
+
+
+def test_ws_sends_pending_snapshot_on_connect(tmp_path, monkeypatch):
+    f = tmp_path / "pending.txt"
+    f.write_text("новое выделение", encoding="utf-8")
+    monkeypatch.setenv("MT_PENDING", str(f))
+    with TestClient(gateway.app) as c, c.websocket_connect("/ws") as ws:
+        snap = ws.receive_json()
+    assert snap == {"type": "pending", "text": "новое выделение"}

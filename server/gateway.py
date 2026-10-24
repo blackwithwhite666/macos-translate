@@ -446,10 +446,27 @@ async def watch_pending() -> None:
             raise
 
 
+def _pending_snapshot() -> dict[str, Any]:
+    try:
+        p = _pending_path()
+        st = p.stat()
+        return {
+            "text": p.read_text(encoding="utf-8"),
+            "mtime_ns": st.st_mtime_ns,
+            "size": st.st_size,
+        }
+    except OSError:
+        return {"text": None, "mtime_ns": 0, "size": 0}
+
+
 @app.websocket("/ws")
 async def ws_endpoint(websocket: WebSocket) -> None:
     await websocket.accept()
     conns.add(websocket)
+    # Снапшот сразу при подключении: страница всегда открывается с текстом
+    snap = _pending_snapshot()
+    if snap["text"] and snap["text"].strip():
+        await websocket.send_json({"type": "pending", "text": snap["text"]})
     try:
         while True:
             msg = await websocket.receive_json()

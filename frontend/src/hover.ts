@@ -84,8 +84,14 @@ function hideAll(): void {
 }
 
 export function attachHover(zones: HTMLElement[]): void {
+  const card = document.getElementById('dict-card');
   document.addEventListener('mousemove', (ev) => {
     const target = ev.target as Element | null;
+    // Курсор над карточкой словаря — не прячем её (иначе моргание:
+    // слово под карточкой → карточка накрыла его → hover ушёл → скрылась → …)
+    if (target && card && (target === card || card.contains(target))) {
+      return;
+    }
     const zone = target?.closest?.('.zone') as HTMLElement | null;
     if (!zone || !zones.includes(zone)) {
       hideAll();
