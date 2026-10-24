@@ -53,6 +53,24 @@ body {
   font-size: 15px;
 }
 
+/* Мигающая каретка в конце стримящегося текста */
+.mt-caret {
+  display: inline-block;
+  width: 0.55em;
+  height: 1.02em;
+  margin-left: 2px;
+  vertical-align: -0.14em;
+  background: #7aa2ff;
+  border-radius: 1px;
+  animation: mt-blink 1.05s steps(1) infinite;
+}
+
+@keyframes mt-blink {
+  50% {
+    opacity: 0;
+  }
+}
+
 .row-langs {
   display: flex;
   gap: 8px;

@@ -36,21 +36,34 @@ const dictBody = $<HTMLDivElement>('dict-body');
 
 const PLACEHOLDER = 'Выделите текст в любом приложении и вызовите «Перевести»…';
 
-// Спиннер-«змейка» как в Codex: брайль-кадры, крутится пока идёт запрос/стрим
+// Спиннер: пока ждём первый токен — «змейка»; при стриминге в конце текста
+// мигает курсор-каретка, как при печати.
 const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 let spinnerTimer: number | null = null;
-let spinnerEl: HTMLSpanElement | null = null;
+let snakeEl: HTMLSpanElement | null = null;
+let caretEl: HTMLSpanElement | null = null;
 let streamTextNode: Text | null = null;
 
-function startSpinner(): void {
-  stopSpinner();
+function resetOut(): void {
+  if (spinnerTimer !== null) {
+    clearInterval(spinnerTimer);
+    spinnerTimer = null;
+  }
   outBox.innerHTML = '';
+  snakeEl = null;
+  caretEl = null;
+  streamTextNode = document.createTextNode('');
+  outBox.append(streamTextNode);
+}
+
+/** Фаза ожидания: только змейка в начале. */
+function showSnake(): void {
+  resetOut();
   const span = document.createElement('span');
   span.className = 'mt-spinner';
   span.textContent = SPINNER_FRAMES[0];
-  streamTextNode = document.createTextNode('');
-  outBox.append(span, streamTextNode); // змейка + пробел + стримящийся текст
-  spinnerEl = span;
+  outBox.prepend(span);
+  snakeEl = span;
   let i = 0;
   spinnerTimer = window.setInterval(() => {
     i = (i + 1) % SPINNER_FRAMES.length;
@@ -58,18 +71,38 @@ function startSpinner(): void {
   }, 90);
 }
 
+/** Фаза стриминга: текст + мигающая каретка в конце. */
+function showCaret(): void {
+  if (snakeEl) {
+    snakeEl.remove();
+    snakeEl = null;
+    if (spinnerTimer !== null) {
+      clearInterval(spinnerTimer);
+      spinnerTimer = null;
+    }
+  }
+  if (!caretEl) {
+    const caret = document.createElement('span');
+    caret.className = 'mt-caret';
+    outBox.append(caret);
+    caretEl = caret;
+  }
+}
+
 function stopSpinner(): void {
   if (spinnerTimer !== null) {
     clearInterval(spinnerTimer);
     spinnerTimer = null;
   }
-  spinnerEl?.remove();
-  spinnerEl = null;
+  snakeEl?.remove();
+  snakeEl = null;
+  caretEl?.remove();
+  caretEl = null;
   streamTextNode = null;
 }
 
 function updateStreamText(text: string): void {
-  if (streamTextNode) streamTextNode.data = ` ${text}`;
+  if (streamTextNode) streamTextNode.data = text;
   else outBox.textContent = text;
 }
 
@@ -179,7 +212,7 @@ function handleEvent(ev: ServerEvent): void {
 
   switch (ev.type) {
     case 'status':
-      if (!spinnerEl) startSpinner();
+      if (!snakeEl && !caretEl) showSnake();
       break;
     case 'detect':
       if (srcSel.value === 'auto' && ev.used_as_source) {
@@ -189,7 +222,7 @@ function handleEvent(ev: ServerEvent): void {
       break;
     case 'token':
       acc.push(ev.text);
-      if (!spinnerEl) startSpinner();
+      showCaret();
       updateStreamText(acc.join(''));
       scrollOutToEnd();
       break;    case 'done':
@@ -213,7 +246,7 @@ function translate(): void {
   state.busy = true;
   state.result = '';
   acc.length = 0;
-  startSpinner();
+  showSnake();
   send({ type: 'translate', text: state.text, src: state.src, tgt: state.tgt, seq: state.seq });
 }
 
