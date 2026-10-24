@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="ru" data-bs-theme="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Перевод</title>
+    <script type="module" src="/src/main.ts"></script>
+  </head>
+  <body>
+    <div id="src-box" class="zone" aria-label="Исходный текст"></div>
+
+    <div class="row-langs">
+      <select id="src-lang" class="form-select form-select-sm" aria-label="Исходный язык"></select>
+      <span class="arrow" aria-hidden="true">→</span>
+      <select id="tgt-lang" class="form-select form-select-sm" aria-label="Целевой язык"></select>
+    </div>
+
+    <div id="out-box" class="zone" aria-label="Перевод"></div>
+
+    <div id="dict-card">
+      <div class="d-flex justify-content-between align-items-center mb-1">
+        <span id="dict-word" class="fw-bold"></span>
+        <span class="d-flex gap-2">
+          <span id="copy-btn" title="Скопировать перевод">⧉</span>
+          <span id="dict-close" title="Скрыть">✕</span>
+        </span>
+      </div>
+      <div id="dict-body">Наведите курсор на слово — покажу статью из словаря</div>
+    </div>
+  </body>
+</html>

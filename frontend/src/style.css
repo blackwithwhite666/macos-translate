@@ -1,0 +1,113 @@
+html,
+body {
+  height: 100%;
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px 10px;
+  background: #1c1e24;
+  color: #e8e8ec;
+  font-family: -apple-system, system-ui, sans-serif;
+  font-size: 13.5px;
+  line-height: 1.5;
+  overflow: hidden;
+}
+
+.zone {
+  border: 1px solid rgba(128, 128, 140, 0.3);
+  border-radius: 8px;
+  padding: 8px 10px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  cursor: default;
+}
+
+#src-box {
+  max-height: 122px;
+  overflow-y: auto;
+  color: #c9c9d1;
+}
+
+#src-box.placeholder {
+  opacity: 0.45;
+}
+
+#out-box {
+  flex: 1;
+  min-height: 110px;
+  overflow-y: auto;
+  font-size: 14px;
+  color: #ececf2;
+}
+
+.row-langs {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.row-langs select {
+  flex: 1;
+  min-width: 0;
+  font-size: 0.8rem;
+}
+
+.row-langs .arrow {
+  color: #9aa0ad;
+  font-size: 15px;
+}
+
+#dict-card {
+  position: fixed;
+  left: 10px;
+  right: 10px;
+  bottom: 8px;
+  max-height: 180px;
+  display: flex;
+  flex-direction: column;
+  background: rgba(28, 30, 38, 0.98);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 11px;
+  padding: 8px 11px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.45);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(6px);
+  transition: opacity 0.12s, transform 0.12s;
+}
+
+#dict-card.on {
+  opacity: 1;
+  pointer-events: auto;
+  transform: none;
+}
+
+#dict-word {
+  font-size: 13.5px;
+}
+
+#dict-body {
+  overflow-y: auto;
+  font-size: 12px;
+  line-height: 1.45;
+  color: #c9c9d1;
+}
+
+#copy-btn,
+#dict-close {
+  cursor: pointer;
+  opacity: 0.55;
+}
+
+#copy-btn:hover,
+#dict-close:hover {
+  opacity: 1;
+}
+
+::highlight(mt-word) {
+  background-color: rgba(122, 162, 255, 0.45);
+  border-radius: 2px;
+}

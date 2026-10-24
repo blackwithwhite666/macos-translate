@@ -26,7 +26,7 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
 from lingua import Language, LanguageDetectorBuilder
 from pydantic import BaseModel, Field
@@ -127,7 +127,8 @@ class WorkerManager:
         self.lock = asyncio.Lock()  # один перевод за раз (MLX всё равно последователен)
         self.last_active = 0.0
         self._queues: dict[int, asyncio.Queue] = {}
-        self._control: asyncio.Queue = asyncio.Queue()
+        # создаётся лениво в ensure(): очередь обязана жить в текущем event loop
+        self._control: asyncio.Queue | None = None
         self._next_id = 1
 
     def running(self) -> bool:
@@ -150,6 +151,7 @@ class WorkerManager:
             self.last_active = time.monotonic()
             return
         self.last_active = time.monotonic()  # считаем простой от старта загрузки
+        self._control = asyncio.Queue()  # привязка к текущему event loop
         logger.info("запускаю подпроцесс с моделью: %s", " ".join(self._cmd()))
         self.proc = await asyncio.create_subprocess_exec(
             *self._cmd(),
@@ -163,6 +165,7 @@ class WorkerManager:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise TimeoutError("воркер не поднялся за отведённое время")
+            assert self._control is not None
             ev = await asyncio.wait_for(self._control.get(), timeout=remaining)
             if ev.get("event") == "ready":
                 logger.info("модель готова: %s", ev.get("model"))
@@ -204,7 +207,7 @@ class WorkerManager:
             q = self._queues.get(ev.get("id"))
             if q is not None:
                 q.put_nowait(ev)
-            else:
+            elif self._control is not None:
                 self._control.put_nowait(ev)
         rc = await proc.wait()
         logger.info("подпроцесс с моделью завершился (rc=%s)", rc)
@@ -245,12 +248,16 @@ mgr = WorkerManager()
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
-    task = asyncio.create_task(mgr.reaper())
+    tasks = [
+        asyncio.create_task(mgr.reaper()),
+        asyncio.create_task(watch_pending()),
+    ]
     logger.info("gateway поднят (idle_timeout=%.0f с)", IDLE_TIMEOUT)
     try:
         yield
     finally:
-        task.cancel()
+        for t in tasks:
+            t.cancel()
         await mgr.unload("выключение gateway")
 
 
@@ -311,71 +318,80 @@ def _sse(event: str, data: dict[str, Any]) -> str:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
-@app.post("/translate")
-async def translate(req: TranslateIn) -> StreamingResponse:
-    if req.tgt not in ALL_LANGUAGES:
-        raise HTTPException(422, f"неизвестный целевой язык: {req.tgt!r}")
-    if req.src != "auto" and req.src not in BIDIRECTIONAL:
-        raise HTTPException(422, f"неизвестный исходный язык: {req.src!r}")
-    if req.src == req.tgt:
+async def translation_events(text: str, src: str, tgt: str) -> AsyncIterator[dict[str, Any]]:
+    """Общий поток событий перевода (dict с полем type). Потребители:
+    SSE /translate и WebSocket /ws. Логирует завершённый перевод."""
+    t0 = time.perf_counter()
+    detected: dict[str, Any] | None = None
+    try:
+        if src == "auto":
+            yield {"type": "status", "phase": "detecting"}
+            detected = await asyncio.to_thread(detect_language, text)
+            src = detected["language"] or "English"
+            yield {"type": "detect", **detected, "used_as_source": src}
+        async with mgr.lock:
+            try:
+                await mgr.ensure()
+            except Exception as e:
+                logger.exception("не удалось поднять воркер")
+                yield {"type": "error", "message": f"модель не запустилась: {e}"}
+                return
+            yield {"type": "status", "phase": "generating"}
+            rid = mgr.next_id()
+            q = await mgr.submit(
+                {"id": rid, "cmd": "translate", "text": text, "src": src, "tgt": tgt}
+            )
+            tokens: list[str] = []
+            done: dict[str, Any] = {}
+            while True:
+                ev = await asyncio.wait_for(q.get(), timeout=EVENT_TIMEOUT)
+                kind = ev.get("event")
+                if kind == "token":
+                    piece = ev.get("text", "")
+                    tokens.append(piece)
+                    yield {"type": "token", "text": piece}
+                elif kind == "done":
+                    done = ev
+                    break
+                elif kind == "error":
+                    yield {"type": "error", "message": ev.get("message", "ошибка воркера")}
+                    return
+            translation = done.get("translation", "")
+            duration_ms = int((time.perf_counter() - t0) * 1000)
+            yield {
+                "type": "done",
+                "translation": translation,
+                "src": src,
+                "tgt": tgt,
+                "prompt_tokens": done.get("prompt_tokens"),
+                "gen_tokens": done.get("gen_tokens"),
+                "duration_ms": duration_ms,
+            }
+            _log_translation(text, tgt, detected, src, translation, done, duration_ms)
+    except TimeoutError:
+        yield {"type": "error", "message": "таймаут ожидания модели"}
+    except Exception as e:
+        logger.exception("translate failed")
+        yield {"type": "error", "message": str(e)}
+
+
+def _validate_translate(text: str, src: str, tgt: str) -> None:
+    if tgt not in ALL_LANGUAGES:
+        raise HTTPException(422, f"неизвестный целевой язык: {tgt!r}")
+    if src != "auto" and src not in BIDIRECTIONAL:
+        raise HTTPException(422, f"неизвестный исходный язык: {src!r}")
+    if src == tgt:
         raise HTTPException(400, "исходный и целевой язык совпадают")
 
+
+@app.post("/translate")
+async def translate(req: TranslateIn) -> StreamingResponse:
+    """SSE-вариант (для curl/тестов); UI ходит через WebSocket /ws."""
+    _validate_translate(req.text, req.src, req.tgt)
+
     async def gen() -> AsyncIterator[str]:
-        t0 = time.perf_counter()
-        detected: dict[str, Any] | None = None
-        try:
-            src = req.src
-            if src == "auto":
-                yield _sse("status", {"phase": "detecting"})
-                detected = await asyncio.to_thread(detect_language, req.text)
-                src = detected["language"] or "English"
-                yield _sse("detect", {**detected, "used_as_source": src})
-            async with mgr.lock:
-                try:
-                    await mgr.ensure()
-                except Exception as e:
-                    logger.exception("не удалось поднять воркер")
-                    yield _sse("error", {"message": f"модель не запустилась: {e}"})
-                    return
-                yield _sse("status", {"phase": "generating"})
-                rid = mgr.next_id()
-                q = await mgr.submit(
-                    {"id": rid, "cmd": "translate", "text": req.text, "src": src, "tgt": req.tgt}
-                )
-                tokens: list[str] = []
-                done: dict[str, Any] = {}
-                while True:
-                    ev = await asyncio.wait_for(q.get(), timeout=EVENT_TIMEOUT)
-                    kind = ev.get("event")
-                    if kind == "token":
-                        piece = ev.get("text", "")
-                        tokens.append(piece)
-                        yield _sse("token", {"text": piece})
-                    elif kind == "done":
-                        done = ev
-                        break
-                    elif kind == "error":
-                        yield _sse("error", {"message": ev.get("message", "ошибка воркера")})
-                        return
-                translation = done.get("translation", "")
-                duration_ms = int((time.perf_counter() - t0) * 1000)
-                yield _sse(
-                    "done",
-                    {
-                        "translation": translation,
-                        "src": src,
-                        "tgt": req.tgt,
-                        "prompt_tokens": done.get("prompt_tokens"),
-                        "gen_tokens": done.get("gen_tokens"),
-                        "duration_ms": duration_ms,
-                    },
-                )
-                _log_translation(req, detected, src, translation, done, duration_ms)
-        except TimeoutError:
-            yield _sse("error", {"message": "таймаут ожидания модели"})
-        except Exception as e:
-            logger.exception("translate failed")
-            yield _sse("error", {"message": str(e)})
+        async for ev in translation_events(req.text, req.src, req.tgt):
+            yield _sse(ev["type"], ev)
 
     return StreamingResponse(
         gen(),
@@ -384,8 +400,87 @@ async def translate(req: TranslateIn) -> StreamingResponse:
     )
 
 
+# --- WebSocket для UI ------------------------------------------------------------
+
+
+class Connections:
+    def __init__(self) -> None:
+        self._set: set[WebSocket] = set()
+
+    def add(self, ws: WebSocket) -> None:
+        self._set.add(ws)
+
+    def discard(self, ws: WebSocket) -> None:
+        self._set.discard(ws)
+
+    async def broadcast(self, message: dict[str, Any]) -> None:
+        for ws in list(self._set):
+            try:
+                await ws.send_json(message)
+            except Exception:  # noqa: BLE001 — умершее соединение уберётся onclose
+                self.discard(ws)
+
+
+conns = Connections()
+
+PENDING_WATCH_INTERVAL = 0.4
+
+
+async def watch_pending() -> None:
+    """Пушит новый выделенный текст всем подключённым панелям."""
+    last_key: tuple[int, int] | None = None
+    while True:
+        await asyncio.sleep(PENDING_WATCH_INTERVAL)
+        try:
+            p = _pending_path()
+            st = p.stat()
+            key = (st.st_mtime_ns, st.st_size)
+            if key != last_key:
+                last_key = key
+                text = p.read_text(encoding="utf-8")
+                if text.strip():
+                    await conns.broadcast({"type": "pending", "text": text})
+        except OSError:
+            continue
+        except asyncio.CancelledError:
+            raise
+
+
+@app.websocket("/ws")
+async def ws_endpoint(websocket: WebSocket) -> None:
+    await websocket.accept()
+    conns.add(websocket)
+    try:
+        while True:
+            msg = await websocket.receive_json()
+            mtype = msg.get("type")
+            if mtype == "translate":
+                text, src, tgt, seq = (
+                    str(msg.get("text", "")),
+                    str(msg.get("src", "auto")),
+                    str(msg.get("tgt", "")),
+                    msg.get("seq"),
+                )
+                try:
+                    _validate_translate(text, src, tgt)
+                except HTTPException as e:
+                    await websocket.send_json({"type": "error", "message": e.detail, "seq": seq})
+                    continue
+                async for ev in translation_events(text, src, tgt):
+                    await websocket.send_json({**ev, "seq": seq})
+            else:
+                await websocket.send_json(
+                    {"type": "error", "message": f"неизвестный тип: {mtype!r}"}
+                )
+    except WebSocketDisconnect:
+        pass
+    finally:
+        conns.discard(websocket)
+
+
 def _log_translation(
-    req: TranslateIn,
+    text: str,
+    tgt: str,
     detected: dict[str, Any] | None,
     src: str,
     translation: str,
@@ -397,8 +492,8 @@ def _log_translation(
         "src": src,
         "src_detected": (detected or {}).get("language"),
         "src_confidence": (detected or {}).get("confidence"),
-        "tgt": req.tgt,
-        "input": req.text,
+        "tgt": tgt,
+        "input": text,
         "output": translation,
         "prompt_tokens": done.get("prompt_tokens"),
         "output_tokens": done.get("gen_tokens"),
@@ -412,9 +507,9 @@ def _log_translation(
         logger.exception("не смог записать лог переводов")
     logger.info(
         "перевёл %d→%d симв. %s→%s за %d мс",
-        len(req.text),
+        len(text),
         len(translation),
         src,
-        req.tgt,
+        tgt,
         duration_ms,
     )
