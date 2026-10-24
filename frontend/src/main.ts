@@ -97,11 +97,17 @@ function setSourceText(text: string): void {
   state.text = text;
   srcBox.classList.remove('placeholder');
   srcBox.textContent = text;
+  srcBox.scrollTop = 0;
 }
 
 function showPlaceholder(): void {
   srcBox.classList.add('placeholder');
   srcBox.textContent = PLACEHOLDER;
+}
+
+/** Стриминг: держим перевод прокрученным в конец. */
+function scrollOutToEnd(): void {
+  outBox.scrollTop = outBox.scrollHeight;
 }
 
 // --- WebSocket -------------------------------------------------------------------
@@ -140,6 +146,7 @@ function handleEvent(ev: ServerEvent): void {
   switch (ev.type) {
     case 'status':
       outBox.innerHTML = `<span class="text-secondary">⏳ ${STATUS_LABELS[ev.phase] ?? ev.phase}</span>`;
+      scrollOutToEnd();
       break;
     case 'detect':
       if (srcSel.value === 'auto' && ev.used_as_source) {
@@ -149,11 +156,13 @@ function handleEvent(ev: ServerEvent): void {
       break;
     case 'token':
       outBox.textContent += ev.text;
+      scrollOutToEnd();
       break;
     case 'done':
       state.result = ev.translation;
       state.busy = false;
       outBox.textContent = ev.translation;
+      scrollOutToEnd();
       break;
     case 'error':
       state.busy = false;

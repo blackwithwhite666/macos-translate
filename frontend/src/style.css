@@ -27,13 +27,17 @@ body {
 }
 
 #src-box {
-  max-height: 122px;
+  max-height: 34vh; /* растёт с текстом, но не больше трети окна */
   overflow-y: auto;
   color: #e2e2e8;
 }
 
+/* Пустое состояние — просто подсказка, без рамки «поля ввода» */
 #src-box.placeholder {
-  opacity: 0.45;
+  border: none;
+  color: rgba(200, 200, 210, 0.4);
+  text-align: center;
+  padding-top: 18px;
 }
 
 #out-box {
