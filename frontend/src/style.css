@@ -48,6 +48,11 @@ body {
   color: #ececf2;
 }
 
+.mt-spinner {
+  color: #7aa2ff;
+  font-size: 15px;
+}
+
 .row-langs {
   display: flex;
   gap: 8px;

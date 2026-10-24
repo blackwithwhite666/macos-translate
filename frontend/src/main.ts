@@ -33,11 +33,43 @@ const dictWord = $<HTMLSpanElement>('dict-word');
 const dictBody = $<HTMLDivElement>('dict-body');
 
 const PLACEHOLDER = 'Выделите текст в любом приложении и вызовите «Перевести»…';
-const STATUS_LABELS: Record<string, string> = {
-  detecting: 'Определяю язык…',
-  'loading-model': 'Подгружаю модель (первый запуск ~10 с)…',
-  generating: 'Перевожу…',
-};
+
+// Спиннер-«змейка» как в Codex: брайль-кадры, крутится пока идёт запрос/стрим
+const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+let spinnerTimer: number | null = null;
+let spinnerEl: HTMLSpanElement | null = null;
+let streamTextNode: Text | null = null;
+
+function startSpinner(): void {
+  stopSpinner();
+  outBox.innerHTML = '';
+  const span = document.createElement('span');
+  span.className = 'mt-spinner';
+  span.textContent = SPINNER_FRAMES[0];
+  streamTextNode = document.createTextNode('');
+  outBox.append(span, streamTextNode); // змейка + пробел + стримящийся текст
+  spinnerEl = span;
+  let i = 0;
+  spinnerTimer = window.setInterval(() => {
+    i = (i + 1) % SPINNER_FRAMES.length;
+    span.textContent = SPINNER_FRAMES[i];
+  }, 90);
+}
+
+function stopSpinner(): void {
+  if (spinnerTimer !== null) {
+    clearInterval(spinnerTimer);
+    spinnerTimer = null;
+  }
+  spinnerEl?.remove();
+  spinnerEl = null;
+  streamTextNode = null;
+}
+
+function updateStreamText(text: string): void {
+  if (streamTextNode) streamTextNode.data = ` ${text}`;
+  else outBox.textContent = text;
+}
 
 // --- Мост к системному словарю (Swift: DCSCopyTextDefinition) ------------------
 
@@ -145,8 +177,7 @@ function handleEvent(ev: ServerEvent): void {
 
   switch (ev.type) {
     case 'status':
-      outBox.innerHTML = `<span class="text-secondary">⏳ ${STATUS_LABELS[ev.phase] ?? ev.phase}</span>`;
-      scrollOutToEnd();
+      if (!spinnerEl) startSpinner();
       break;
     case 'detect':
       if (srcSel.value === 'auto' && ev.used_as_source) {
@@ -155,17 +186,21 @@ function handleEvent(ev: ServerEvent): void {
       }
       break;
     case 'token':
-      outBox.textContent += ev.text;
+      acc.push(ev.text);
+      if (!spinnerEl) startSpinner();
+      updateStreamText(acc.join(''));
       scrollOutToEnd();
       break;
     case 'done':
       state.result = ev.translation;
       state.busy = false;
+      stopSpinner();
       outBox.textContent = ev.translation;
       scrollOutToEnd();
       break;
     case 'error':
       state.busy = false;
+      stopSpinner();
       outBox.innerHTML = `<span class="text-danger">${ev.message}</span>`;
       break;
   }
@@ -176,7 +211,7 @@ function translate(): void {
   state.seq += 1;
   state.busy = true;
   state.result = '';
-  outBox.textContent = '';
+  startSpinner();
   send({ type: 'translate', text: state.text, src: state.src, tgt: state.tgt, seq: state.seq });
 }
 
