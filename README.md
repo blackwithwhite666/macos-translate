@@ -1,141 +1,151 @@
 # macos-translate
 
-Локальный переводчик для macOS: выделили текст → нажали «Перевести» → рядом с курсором
-появилось окошко, в котором перевод **печатается построчно**. Наведение на слово —
-статья из системного словаря. Всё офлайн: ни один байт не уходит с машины.
+A local translator for macOS: select text, hit "Translate", and a small window
+appears next to the cursor where the translation is typed out token by token.
+Hover a word to see its entry from the macOS system dictionary. Everything runs
+offline — nothing leaves your machine.
+
+![Panel with dictionary card](assets/screenshot-dict.png)
+![Panel with translation](assets/screenshot.png)
 
 | | |
 |---|---|
-| Модель | Google TranslateGemma 4B, 8-битный MLX-квант (~4 ГБ) |
-| Языки | 295 (225 двунаправленных + 70 «с английского») |
-| Детект языка | lingua-language-detector (авто) |
-| Словарь | системные словари macOS (Dictionary.app / «Локатор») |
-| Память | модель живёт в подпроцессе и **выгружается после 10 минут простоя** |
+| Model | Google TranslateGemma 4B, 8-bit MLX quant (~4 GB) |
+| Languages | 295 (225 bidirectional + 70 English-only targets) |
+| Language detection | lingua-language-detector (automatic) |
+| Dictionary | macOS system dictionaries (the ones in Dictionary.app) |
+| Memory | the model lives in a subprocess and is **unloaded after 10 minutes of inactivity** |
 
-## Как это устроено
+## How it works
 
 ```
-Выделение текста
-   │  Quick Action (Automator) пишет текст в файл и открывает macos-translate://
+Text selection
+   │  a Quick Action writes the text to a file and opens macos-translate://
    ▼
-MacOSTranslate.app — нативная оболочка (Swift, без иконки в Dock)
-   │  NSPanel + WKWebView; UI — ОДИН минифицированный index.html, вшитый в бандл
-   │  (TypeScript + Bootstrap, собирается Vite), грузится по схеме app://
+MacOSTranslate.app — native shell (Swift, no Dock icon)
+   │  NSPanel + WKWebView; the UI is ONE minified index.html embedded in
+   │  the bundle (TypeScript + Bootstrap, built by Vite), served via app://
    ▼
-WebSocket → gateway на FastAPI (порт 8765, живёт в launchd)
-   │  пушит новый выделенный текст, стримит токены перевода
+WebSocket → FastAPI gateway (port 8765, managed by launchd)
+   │  pushes new selections, streams translation tokens
    ▼
-подпроцесс worker.py — TranslateGemma через MLX (~4 ГБ, выгрузка по простою)
+worker.py subprocess — TranslateGemma via MLX (~4 GB, unloaded when idle)
 ```
 
-Управление: `https://github.com/blackwithwhite666/macos-translate`
+Repo: https://github.com/blackwithwhite666/macos-translate
 
-## Установка
+## Installation
 
-Нужны: Mac на Apple Silicon, macOS 13+, [uv](https://docs.astral.sh/uv/), Node.js (для сборки UI), Xcode Command Line Tools (`xcode-select --install`).
+Requirements: an Apple Silicon Mac, macOS 13+, [uv](https://docs.astral.sh/uv/),
+Node.js (to build the UI), and Xcode Command Line Tools (`xcode-select --install`).
 
 ```bash
 git clone https://github.com/blackwithwhite666/macos-translate.git
 cd macos-translate
 
-# 1) Python-зависимости сервера
+# 1) Python dependencies for the server
 cd server && uv sync && cd ..
 
-# 2) Собрать приложение (UI + Swift, на выходе app/build/MacOSTranslate.app)
+# 2) Build the app (UI + Swift; result: app/build/MacOSTranslate.app)
 app/build.sh
 
-# 3) Сервис перевода: старт при входе, автоперезапуск, модель по требованию
+# 3) Translation service: starts at login, auto-restarts, loads the model on demand
 scripts/install-launchd.sh
 
-# 4) Запустить приложение
+# 4) Launch the app
 open app/build/MacOSTranslate.app
 ```
 
-При первом переводе модель скачается с Hugging Face (3,9 ГБ) в
-`~/.cache/huggingface` — первый перевод займёт пару минут, дальше ~5–10 с
-холодного старта модели и 1–3 с с тёплой.
+On the first translation the model is downloaded from Hugging Face (3.9 GB)
+into `~/.cache/huggingface`. The first translation takes a couple of minutes;
+after that, a cold model load is ~5–10 s and a warm one translates in 1–3 s.
 
-> Приложение можно скопировать в `/Applications` или `~/Applications` —
-> оно самодостаточно, сервер нужен только для переводов.
+> You can copy the app to `/Applications` or `~/Applications` — it is
+> self-contained; the server is only needed for translations.
 
-## Автоматизация: перевод выделенного текста
+## Automation: translate the selected text
 
-### Quick Action (контекстное меню + хоткей)
+### Quick Action (context menu + hotkey)
 
-1. Откройте **Automator** → File → New → **Quick Action**
-2. Вверху: «Workflow receives selected **text** in **any application**»
-3. Добавьте действие **Run Shell Script**:
-   - Shell: `/bin/zsh`, «Pass input»: **to stdin**
-   - содержимое — одна строка:
+1. Open **Automator** → File → New → **Quick Action**
+2. At the top set: "Workflow receives selected **text** in **any application**"
+3. Add the **Run Shell Script** action:
+   - Shell: `/bin/zsh`, "Pass input": **to stdin**
+   - content — one line:
      ```bash
      ~/projects/macos-translate/scripts/quick-action.sh "$@"
      ```
-4. Сохраните как **«Перевести»**
+4. Save it as **"Translate"**
 
-Проверка из терминала:
+Test from the terminal:
 
 ```bash
 echo "Hello, world" | ~/projects/macos-translate/scripts/quick-action.sh
 ```
 
-### Горячая клавиша
+### Hotkey
 
-System Settings → Keyboard → Keyboard Shortcuts → **Services** → «Перевести» →
-Add Shortcut. Свободное сочетание: **⌥⌘E** (⌥⌘R и ⌥⌘U тоже свободны).
+System Settings → Keyboard → Keyboard Shortcuts → **Services** → "Translate" →
+Add Shortcut. A free combination: **⌥⌘E** (⌥⌘R and ⌥⌘U are free too).
 
-После настройки: выделили текст → правый клик → Службы → «Перевести»
-(или ⌥⌘E) → панель с переводом рядом с курсором.
+Once configured: select text → right-click → Services → "Translate" (or ⌥⌘E)
+→ the panel with the translation appears near the cursor.
 
-Целевой язык по умолчанию русский; смените в селекте панели — выбор
-запоминается. Скрипту можно передать другой язык:
+The default target language is Russian; change it in the panel's selector —
+the choice is remembered. You can also pass a language to the script:
 `quick-action.sh English`.
 
-## Использование
+## Usage
 
-- **Панель**: клик мимо — прячется, Esc — тоже; тянется за заголовок; перевод
-  печатается с мигающей кареткой, длинные тексты скроллятся
-- **Словарь**: наведите курсор на слово в исходнике или переводе — снизу
-  карточка со статьёй из активных словарей (управляются в Dictionary.app);
-  слово ищется в контексте фразы, словоформы («went» → «go») находятся
-- **Исходный язык**: «Авто» (lingua) — после детекта селект подставит язык;
-  выбор языка вручную мгновенно перезапускает перевод
-- **Копирование**: ⧉ в карточке словаря или просто Cmd+C по выделенному
+- **Panel**: click outside it and it hides; Esc hides it too; drag it by the
+  titlebar. The translation is typed out with a blinking caret; long texts
+  scroll inside their boxes
+- **Dictionary**: put the pointer on a word in the source text or the
+  translation — a card with the dictionary entry appears at the bottom. It uses
+  your active dictionaries (manage them in Dictionary.app). The word is looked
+  up in the context of the phrase, so inflected forms are found ("went" → "go")
+- **Source language**: "Auto" (lingua) — after detection the selector shows the
+  detected language; picking a language manually restarts the translation
+- **Copy**: ⧉ in the dictionary card, or just select and Cmd+C
 
-## Логи
+## Logs
 
-- `logs/translations.jsonl` — что просили перевести и что перевёл: вход, выход,
-  языки, токены, длительность (`tail -f logs/translations.jsonl`)
-- `logs/server.log` — жизненный цикл: подъём/выгрузка модели, ошибки
+- `logs/translations.jsonl` — what was asked to translate and what came back:
+  input, output, languages, tokens, duration (`tail -f logs/translations.jsonl`)
+- `logs/server.log` — lifecycle: model load/unload, errors
 
-## Настройка
+## Configuration
 
-Переменные окружения LaunchAgent (`~/Library/LaunchAgents/local.macos-translate.server.plist`):
+Environment variables of the LaunchAgent
+(`~/Library/LaunchAgents/local.macos-translate.server.plist`):
 
-| Переменная | По умолчанию | Смысл |
+| Variable | Default | Meaning |
 |---|---|---|
-| `MT_IDLE_TIMEOUT` | `600` | секунд простоя до выгрузки модели |
-| `MT_DEFAULT_TARGET` | `Russian` | целевой язык по умолчанию |
+| `MT_IDLE_TIMEOUT` | `600` | seconds of inactivity before the model is unloaded |
+| `MT_DEFAULT_TARGET` | `Russian` | default target language |
 
-Порты: gateway `127.0.0.1:8765` (HTTP+SSE+WebSocket). UI ничего не слушает.
+Ports: the gateway listens on `127.0.0.1:8765` (HTTP + SSE + WebSocket).
+The UI itself listens on nothing.
 
-После правок plist: `launchctl kickstart -k gui/$(id -u)/local.macos-translate.server`.
+After editing the plist:
+`launchctl kickstart -k gui/$(id -u)/local.macos-translate.server`.
 
-## Разработка
+## Development
 
 ```bash
 cd server
-uv run pytest            # тесты (фейковый воркер, модель не нужна)
-uv run ruff check .      # линт
-uv run ty check gateway.py worker.py   # типы
+uv run pytest                          # tests (fake worker, no model needed)
+uv run ruff check .                    # lint
+uv run ty check gateway.py worker.py   # types
 
 cd ../frontend
-npm run typecheck        # TypeScript
+npm run typecheck                      # TypeScript
 
 cd ../app
-./build.sh               # пересборка UI + Swift + бандл
+./build.sh                             # rebuild UI + Swift + bundle
 ```
 
-Ручная проверка перевода без UI:
+Manual translation check without the UI:
 
 ```bash
 curl -N -X POST http://127.0.0.1:8765/translate \
@@ -143,25 +153,25 @@ curl -N -X POST http://127.0.0.1:8765/translate \
   -d '{"text":"Hello, how are you?","src":"auto","tgt":"Russian"}'
 ```
 
-### Структура
+### Layout
 
 ```
-app/        Swift: NSPanel+WKWebView, app://-схема, словарный мост (DCS)
-frontend/   TypeScript-UI (Vite → один index.html в бандл приложения)
-server/     FastAPI-gateway + worker.py с моделью, тесты
+app/        Swift: NSPanel + WKWebView, app:// scheme, dictionary bridge (DCS)
+frontend/   TypeScript UI (Vite → one index.html bundled into the app)
+server/     FastAPI gateway + worker.py with the model, tests
 scripts/    quick-action.sh, install/uninstall-launchd.sh, gen-languages.py
 logs/       translations.jsonl, server.log
 ```
 
-## Остановка и удаление
+## Stopping and removal
 
 ```bash
-scripts/stop-servers.sh       # разово остановить серверы
-scripts/uninstall-launchd.sh  # удалить LaunchAgent
-# приложение: просто закрыть/удалить MacOSTranslate.app
+scripts/stop-servers.sh       # stop the servers once
+scripts/uninstall-launchd.sh  # remove the LaunchAgent
+# the app: just close it / delete MacOSTranslate.app
 ```
 
-## Лицензия
+## License
 
-Код — MIT. Модель TranslateGemma — Google Gemma Terms of Use
-(скачивается отдельно при первом запуске).
+The code is MIT. The TranslateGemma model is subject to Google's Gemma Terms of
+Use (downloaded separately on first run).
