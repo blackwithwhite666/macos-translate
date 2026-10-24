@@ -49,7 +49,7 @@ body {
 }
 
 .mt-spinner {
-  color: #7aa2ff;
+  color: #c9c9d1;
   font-size: 15px;
 }
 
@@ -60,7 +60,7 @@ body {
   height: 1.02em;
   margin-left: 2px;
   vertical-align: -0.14em;
-  background: #7aa2ff;
+  background: #c9c9d1;
   border-radius: 1px;
   animation: mt-blink 1.05s steps(1) infinite;
 }
