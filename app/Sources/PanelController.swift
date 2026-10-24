@@ -1,12 +1,6 @@
 import AppKit
 import WebKit
 
-/// Полоса поверх WKWebView: без неё окно с скрытым титлбаром не тянется.
-/// Стандартные кнопки окна лежат выше contentView — клики до неё не доходят.
-final class TitlebarDragView: NSView {
-    override var mouseDownCanMoveWindow: Bool { true }
-}
-
 /// Прокси, чтобы WKUserContentController не удерживал PanelController вечно.
 final class WeakScriptMessageHandler: NSObject, WKScriptMessageHandler {
     weak var delegate: WKScriptMessageHandler?
@@ -72,8 +66,9 @@ final class PanelController:
 
         let panel = NSPanel(
             contentRect: NSRect(x: 0, y: 0, width: 460, height: 460),
-            styleMask: [.titled, .closable, .resizable, .fullSizeContentView],
+            styleMask: [.titled, .closable, .resizable],
             backing: .buffered, defer: false)
+        // Нативная зона перетаскивания: титлбар есть, но прозрачный и без текста
         panel.title = "Перевод"
         panel.titleVisibility = .hidden
         panel.titlebarAppearsTransparent = true
@@ -122,17 +117,6 @@ final class PanelController:
         webView.underPageBackgroundColor = NSColor(
             srgbRed: 0.11, green: 0.118, blue: 0.141, alpha: 1)
         panel.contentView = webView
-
-        // Полоса перетаскивания: титлбар скрыт, тянем окно за верхние 34px
-        let dragStrip = TitlebarDragView(frame: .zero)
-        dragStrip.translatesAutoresizingMaskIntoConstraints = false
-        panel.contentView?.addSubview(dragStrip)
-        NSLayoutConstraint.activate([
-            dragStrip.topAnchor.constraint(equalTo: panel.contentView!.topAnchor),
-            dragStrip.leadingAnchor.constraint(equalTo: panel.contentView!.leadingAnchor),
-            dragStrip.trailingAnchor.constraint(equalTo: panel.contentView!.trailingAnchor),
-            dragStrip.heightAnchor.constraint(equalToConstant: 34),
-        ])
 
         self.webView = webView
         self.panel = panel
