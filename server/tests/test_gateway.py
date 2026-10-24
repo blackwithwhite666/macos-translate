@@ -77,3 +77,15 @@ def test_translate_unknown_target(client):
 def test_translate_same_lang(client):
     r = client.post("/translate", json={"text": "hi", "src": "English", "tgt": "English"})
     assert r.status_code == 400
+
+
+def test_pending(client, tmp_path, monkeypatch):
+    f = tmp_path / "pending.txt"
+    f.write_text("новый выделенный текст", encoding="utf-8")
+    monkeypatch.setenv("MT_PENDING", str(f))
+    body = client.get("/pending").json()
+    assert body["text"] == "новый выделенный текст"
+    assert body["size"] > 0
+    monkeypatch.delenv("MT_PENDING")
+    body = client.get("/pending").json()
+    assert body["text"] is None or isinstance(body["text"], str)

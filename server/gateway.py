@@ -287,6 +287,26 @@ def detect(req: DetectIn) -> dict[str, Any]:
     return detect_language(req.text)
 
 
+def _pending_path() -> Path:
+    return Path(
+        os.environ.get("MT_PENDING") or Path.home() / ".local/state/macos-translate/pending.txt"
+    )
+
+
+@app.get("/pending")
+def pending() -> dict[str, Any]:
+    """Текст из Quick Action (панель опрашивает вместо перезагрузки страницы)."""
+    try:
+        st = _pending_path().stat()
+        return {
+            "text": _pending_path().read_text(encoding="utf-8"),
+            "mtime_ns": st.st_mtime_ns,
+            "size": st.st_size,
+        }
+    except OSError:
+        return {"text": None, "mtime_ns": 0, "size": 0}
+
+
 def _sse(event: str, data: dict[str, Any]) -> str:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 

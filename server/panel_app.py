@@ -1,13 +1,10 @@
 """Компактная Streamlit-панель для окошка перевода (WKWebView в NSPanel).
 
-Параметры URL (их подставляет Swift-обёртка):
-    ?text=...   — выделенный текст (авто-перевод при загрузке)
-    &target=... — целевой язык (имя из languages.py)
-    &t=...      — nonce, чтобы одинаковый текст запускал перевод заново
-
-Стримит токены из POST /translate gateway (SSE). Готовый перевод выводится
-в div.mt-translation — на слова в нём наводит курсор пользователь, а
-JS-слой Swift-обёртки показывает снизу карточку из системного словаря.
+Страница грузится один раз; новые выделения панель подхватывает сама,
+опрашивая GET /pending (st.fragment, раз в секунду) — без перезагрузки.
+Исходный текст и перевод показываются как div-блоки .mt-source /
+.mt-translation: наведение на слово в любом из них открывает снизу
+карточку из системного словаря (JS-слой Swift-обёртки). «✏️» — редактировать.
 """
 
 from __future__ import annotations
@@ -24,7 +21,7 @@ import streamlit as st
 
 from languages import ALL_LANGUAGES
 
-logging.basicConfig(level=logging.INFO)
+logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger("panel")
 
 API = os.environ.get("MT_API", "http://127.0.0.1:8765")
@@ -49,6 +46,31 @@ STATUS_LABELS = {
 
 st.set_page_config(page_title="Перевод", page_icon="🌐", layout="wide")
 
+ZONE_CSS = """
+<style>
+.mt-source, .mt-translation {
+    white-space: pre-wrap;
+    font-size: 13.5px;
+    line-height: 1.5;
+    padding: 8px 10px;
+    border: 1px solid rgba(128,128,140,.3);
+    border-radius: 8px;
+    overflow-wrap: anywhere;
+}
+.mt-source {
+    max-height: 128px;
+    overflow-y: auto;
+    color: #c9c9d1;
+}
+.mt-translation {
+    min-height: 96px;
+    color: #ececf2;
+    font-size: 14px;
+}
+</style>
+"""
+st.markdown(ZONE_CSS, unsafe_allow_html=True)
+
 params = st.query_params
 q_text = params.get("text") or ""
 q_nonce = params.get("t") or ""
@@ -63,14 +85,53 @@ ss.setdefault("text", q_text)
 ss.setdefault("result", "")
 ss.setdefault("detected", None)
 ss.setdefault("auto_key", None)
+ss.setdefault("pending_seen", None)
+ss.setdefault("editing", False)
 
-# Новая ссылка с текстом → сброс и автозапуск
+
+def _pending_state() -> dict[str, Any]:
+    try:
+        r = httpx.get(f"{API}/pending", timeout=1.5)
+        r.raise_for_status()
+        return r.json()
+    except (httpx.HTTPError, json.JSONDecodeError):
+        return {"text": None, "mtime_ns": 0, "size": 0}
+
+
+# Первая загрузка с ?text=… (Swift открывает панель впервые)
 if q_text and ss["auto_key"] != f"{q_nonce}|{q_text[:200]}":
     ss["text"] = q_text
     ss["result"] = ""
     ss["detected"] = None
     ss["auto_key"] = f"{q_nonce}|{q_text[:200]}"
     ss["run_now"] = True
+    ss["editing"] = False
+    p = _pending_state()
+    ss["pending_seen"] = (p["mtime_ns"], p["size"])
+st.query_params.clear()  # чтобы reconnect/reload не переиграл старый текст
+
+
+# Новый выделение из фрагмента — забираем ДО создания виджетов (иначе
+# Streamlit не даёт менять session_state по ключу виджета)
+_incoming = ss.pop("incoming", None)
+if _incoming is not None and _incoming.strip() and _incoming != ss.get("text"):
+    ss["text"] = _incoming
+    ss["result"] = ""
+    ss["detected"] = None
+    ss["run_now"] = True
+    ss["editing"] = False
+
+
+@st.fragment(run_every="1s")
+def _poll_pending() -> None:
+    """Подхватывает новое выделение без перезагрузки страницы."""
+    p = _pending_state()
+    key = (p["mtime_ns"], p["size"])
+    text = (p.get("text") or "").strip()
+    if text and key != ss.get("pending_seen"):
+        ss["pending_seen"] = key
+        ss["incoming"] = text
+        st.rerun()
 
 
 def sse_events(payload: dict[str, Any]) -> Iterator[tuple[str, dict[str, Any]]]:
@@ -95,34 +156,61 @@ def sse_events(payload: dict[str, Any]) -> Iterator[tuple[str, dict[str, Any]]]:
                 event = ""
 
 
-# --- UI ---------------------------------------------------------------------
+# --- Верхняя строка: детект + целевой язык + правка --------------------------
 
-top1, top2 = st.columns([3, 2], vertical_alignment="center")
-with top1:
+c_badge, c_target, c_edit = st.columns([7, 6, 1], vertical_alignment="center")
+with c_badge:
     if ss["detected"]:
         name = ss["detected"].get("language") or ss["detected"].get("lingua_name") or "?"
         conf = ss["detected"].get("confidence")
-        st.caption(
-            f"🧭 **{name}**{f' ({conf:.0%})' if conf is not None else ''} → **{ss['target_lang_name']}**"
-        )
-with top2:
-    target = st.selectbox(
+        suffix = f" ({conf:.0%})" if conf is not None else ""
+        st.markdown(f"🧭 **{name}**{suffix} → **{ss['target_lang_name']}**")
+with c_target:
+    st.selectbox(
         "Перевести на",
         targets,
         index=targets.index(q_target) if q_target in targets else 0,
         key="target_lang_name",
         label_visibility="collapsed",
     )
+with c_edit:
+    if ss["editing"]:
+        st.button(
+            "✅",
+            key="done_edit",
+            help="Вернуться к просмотру",
+            on_click=lambda: ss.update(editing=False),
+        )
+    else:
+        st.button(
+            "✏️", key="start_edit", help="Изменить текст", on_click=lambda: ss.update(editing=True)
+        )
 
-text = st.text_area(
-    "Исходный текст",
-    key="text",
-    height=110,
-    label_visibility="collapsed",
-    placeholder="Текст появится здесь, когда вы его выделите и вызовете перевод…",
-)
+# --- Исходный текст ----------------------------------------------------------
 
-run = st.button("Перевести", type="primary", use_container_width=True)
+if ss["editing"]:
+    st.text_area(
+        "Исходный текст",
+        key="text",
+        height=88,
+        label_visibility="collapsed",
+    )
+elif (ss["text"] or "").strip():
+    st.markdown(
+        f'<div class="mt-source">{html.escape(ss["text"])}</div>',
+        unsafe_allow_html=True,
+    )
+else:
+    st.markdown(
+        '<div class="mt-source" style="opacity:.45">Выделите текст в любом '
+        "приложении и вызовите «Перевести»…</div>",
+        unsafe_allow_html=True,
+    )
+
+run = st.button("Перевести", "primary", use_container_width=True)
+
+# --- Перевод ------------------------------------------------------------------
+
 if ss.pop("run_now", False) or run:
     if not (ss["text"] or "").strip():
         st.warning("Введите текст для перевода", icon="⚠️")
@@ -130,12 +218,10 @@ if ss.pop("run_now", False) or run:
         payload = {"text": ss["text"], "src": "auto", "tgt": ss["target_lang_name"]}
         box = st.empty()
         acc: list[str] = []
-        detected: dict[str, Any] | None = None
         for event, data in sse_events(payload):
             if event == "status":
                 box.markdown(f"⏳ _{STATUS_LABELS.get(data.get('phase'), data.get('phase', '…'))}_")
             elif event == "detect":
-                detected = data
                 ss["detected"] = data
             elif event == "token":
                 acc.append(data.get("text", ""))
@@ -147,29 +233,10 @@ if ss.pop("run_now", False) or run:
                 box.empty()
                 st.error(data.get("message", "Ошибка перевода"), icon="⚠️")
 
-# Готовый перевод: div.mt-translation — на него реагирует словарный слой Swift.
 if ss["result"]:
-    esc = html.escape(ss["result"])
     st.markdown(
-        f"""
-        <style>
-        .mt-translation {{
-            white-space: pre-wrap;
-            font-size: 14.5px;
-            line-height: 1.55;
-            padding: 12px 14px;
-            border: 1px solid rgba(128,128,140,.35);
-            border-radius: 10px;
-            cursor: default;
-        }}
-        </style>
-        <div class="mt-translation">{esc}</div>
-        """,
+        f'<div class="mt-translation">{html.escape(ss["result"])}</div>',
         unsafe_allow_html=True,
     )
-else:
-    st.caption("_Перевод появится здесь_")
 
-# Место под карточку словаря (она рисуется поверх, снизу окна)
-with st.container(height=150, border=False):
-    st.caption("📖 Наведите курсор на слово в переводе — покажу статью из системного словаря")
+_poll_pending()

@@ -12,12 +12,15 @@ final class WeakScriptMessageHandler: NSObject, WKScriptMessageHandler {
     }
 }
 
-final class PanelController: NSObject, NSWindowDelegate, WKScriptMessageHandler {
+final class PanelController:
+    NSObject, NSWindowDelegate, WKScriptMessageHandler, WKNavigationDelegate {
     static let pendingPath = NSHomeDirectory() + "/.local/state/macos-translate/pending.txt"
     static let panelURL = URL(string: "http://127.0.0.1:8502/")!
 
     private var panel: NSPanel?
     private var webView: WKWebView?
+    private var streamlitLoaded = false
+    private static let dcsQueue = DispatchQueue(label: "local.macos-translate.dcs")
 
     static func readPendingText() -> String? {
         guard let s = try? String(contentsOfFile: pendingPath, encoding: .utf8) else { return nil }
@@ -29,12 +32,16 @@ final class PanelController: NSObject, NSWindowDelegate, WKScriptMessageHandler 
         panel?.orderOut(nil)
     }
 
+    /// Показать панель. Если страница уже открыта — просто показываем её:
+    /// новый текст панель подхватит сама (GET /pending), без перезагрузки.
     func present(text: String?, target: String?) {
         let panel = ensurePanel()
         position(panel)
         panel.orderFrontRegardless()
         NSApp.activate(ignoringOtherApps: true)
         panel.makeKey()
+
+        guard !streamlitLoaded else { return } // быстрый путь: ничего не грузим
 
         var comps = URLComponents(url: Self.panelURL, resolvingAgainstBaseURL: false)!
         var items = [URLQueryItem(
@@ -47,12 +54,12 @@ final class PanelController: NSObject, NSWindowDelegate, WKScriptMessageHandler 
         }
         comps.queryItems = items
 
-        webView?.loadHTMLString(Self.waitingHTML, baseURL: nil)
         ServerManager.shared.ensureRunning { [weak self] ok in
             guard let self, let url = comps.url else { return }
             if ok {
                 self.webView?.load(URLRequest(url: url))
             } else {
+                self.streamlitLoaded = false
                 self.webView?.loadHTMLString(Self.errorHTML, baseURL: nil)
             }
         }
@@ -62,7 +69,7 @@ final class PanelController: NSObject, NSWindowDelegate, WKScriptMessageHandler 
         if let panel { return panel }
 
         let panel = NSPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 480, height: 620),
+            contentRect: NSRect(x: 0, y: 0, width: 460, height: 580),
             styleMask: [.titled, .closable, .resizable, .fullSizeContentView],
             backing: .buffered, defer: false)
         panel.title = "Перевод"
@@ -75,6 +82,7 @@ final class PanelController: NSObject, NSWindowDelegate, WKScriptMessageHandler 
         panel.backgroundColor = NSColor(srgbRed: 0.11, green: 0.118, blue: 0.141, alpha: 1)
         panel.isReleasedWhenClosed = false
         panel.delegate = self
+        panel.minSize = NSSize(width: 380, height: 460)
         panel.standardWindowButton(.miniaturizeButton)?.isHidden = true
         panel.standardWindowButton(.zoomButton)?.isHidden = true
 
@@ -87,7 +95,8 @@ final class PanelController: NSObject, NSWindowDelegate, WKScriptMessageHandler 
                 forMainFrameOnly: true))
 
         let webView = WKWebView(
-            frame: NSRect(x: 0, y: 0, width: 480, height: 620), configuration: config)
+            frame: NSRect(x: 0, y: 0, width: 460, height: 580), configuration: config)
+        webView.navigationDelegate = self
         webView.underPageBackgroundColor = NSColor(
             srgbRed: 0.11, green: 0.118, blue: 0.141, alpha: 1)
         panel.contentView = webView
@@ -103,7 +112,7 @@ final class PanelController: NSObject, NSWindowDelegate, WKScriptMessageHandler 
         let screen = NSScreen.screens.first { NSMouseInRect(mouse, $0.frame, false) } ?? NSScreen.main
         guard let visible = screen?.visibleFrame else { return }
         let size = CGSize(
-            width: min(480, visible.width - 24), height: min(620, visible.height - 24))
+            width: min(460, visible.width - 24), height: min(580, visible.height - 24))
         panel.setFrame(NSRect(x: 0, y: 0, width: size.width, height: size.height), display: false)
         var x = mouse.x - 24
         var y = mouse.y - size.height - 18
@@ -116,6 +125,14 @@ final class PanelController: NSObject, NSWindowDelegate, WKScriptMessageHandler 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         sender.orderOut(nil) // прячем, приложение продолжает жить
         return false
+    }
+
+    // MARK: WKNavigationDelegate
+
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        if let url = webView.url, url.host == "127.0.0.1", url.port == 8502 {
+            streamlitLoaded = true
+        }
     }
 
     // MARK: WKScriptMessageHandler — слово под курсором
@@ -131,8 +148,15 @@ final class PanelController: NSObject, NSWindowDelegate, WKScriptMessageHandler 
         else { return }
         let start = (body["start"] as? NSNumber)?.intValue ?? 0
         let end = (body["end"] as? NSNumber)?.intValue ?? 0
-        let html = DictLookup.definitionHTML(word: word, context: context, start: start, end: end)
-        showInCard(word: word, html: html)
+
+        // DCS может подтормаживать на первом запросе — уводим с главного потока
+        Self.dcsQueue.async { [weak self] in
+            let html = DictLookup.definitionHTML(
+                word: word, context: context, start: start, end: end)
+            DispatchQueue.main.async {
+                self?.showInCard(word: word, html: html)
+            }
+        }
     }
 
     private func showInCard(word: String, html: String) {
@@ -145,17 +169,6 @@ final class PanelController: NSObject, NSWindowDelegate, WKScriptMessageHandler 
         webView.evaluateJavaScript(
             "window.MtDict && MtDict.show(\(args));", completionHandler: nil)
     }
-
-    static let waitingHTML = """
-        <html><head><style>
-        @keyframes spin{to{transform:rotate(360deg)}}
-        body{font-family:-apple-system;background:#1c1e24;color:#e8e8ec;display:flex;
-        align-items:center;justify-content:center;height:100vh;margin:0}
-        .d{width:34px;height:34px;border:3px solid rgba(255,255,255,.2);border-top-color:#7aa2ff;
-        border-radius:50%;animation:spin .8s linear infinite;margin-bottom:14px}
-        .c{display:flex;flex-direction:column;align-items:center;font-size:14px;opacity:.85}
-        </style></head><body><div class="c"><div class="d"></div>Запускаю сервер перевода…</div></body></html>
-        """
 
     static let errorHTML = """
         <html><head><style>
