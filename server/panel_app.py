@@ -70,19 +70,27 @@ ZONE_CSS = """
     font-size: 14px;
 }
 .mt-arrow {
-    text-align: center;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 1.9rem; /* как контрол селекта */
     color: #9aa0ad;
     font-size: 15px;
-    padding-top: 4px;
+    line-height: 1;
+    margin: 0;
+}
+.stMarkdown:has(.mt-arrow) p {
+    margin: 0 !important;
 }
 [data-testid="stHorizontalBlock"] {
     flex-wrap: nowrap !important;
 }
-[data-testid="stHorizontalBlock"] > [data-testid="stColumn"] {
-    min-width: 0 !important;
+div[data-baseweb="select"] {
+    width: 100% !important;
 }
-[data-testid="stHorizontalBlock"] div[data-baseweb="select"] {
-    min-width: 0 !important;
+div[data-baseweb="select"] > div {
+    width: 100% !important;
+    font-size: 0.8rem;
 }
 </style>
 """
